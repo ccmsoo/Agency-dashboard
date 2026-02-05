@@ -36,17 +36,15 @@ function extractTotalFromNote(note: string | null): { amount: number; display: s
 }
 
 // ========================================
-// 시즌 태그 추출 함수
-// 패턴: 26PS, 26FW, 25SS, 25FW, SS25, FW25, etc.
+// 시즌 태그 추출 함수 (fallback용)
 // ========================================
 function extractSeasonFromTags(tags: string[]): string | null {
   if (!tags || tags.length === 0) return null;
   
-  // 시즌 태그 패턴들
   const seasonPatterns = [
-    /^(\d{2})(PS|SS|FW|AW|RS)$/i,  // 26PS, 26FW, 25SS
-    /^(PS|SS|FW|AW|RS)(\d{2})$/i,  // PS26, FW26, SS25
-    /^(Pre-Spring|Spring|Summer|Fall|Winter|Resort)\s*(\d{2,4})$/i,  // Spring 2026
+    /^(\d{2})(PS|SS|FW|AW|RS)$/i,
+    /^(PS|SS|FW|AW|RS)(\d{2})$/i,
+    /^(Pre-Spring|Spring|Summer|Fall|Winter|Resort)\s*(\d{2,4})$/i,
   ];
   
   for (const tag of tags) {
@@ -119,9 +117,15 @@ export async function GET(request: NextRequest) {
                         url
                       }
                       variant {
+                        id
                         sku
                         image {
                           url
+                        }
+                        product {
+                          metafield(namespace: "custom", key: "season") {
+                            value
+                          }
                         }
                       }
                     }
@@ -145,7 +149,6 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // price_tier에서 통화 추출
     const getMetafield = (key: string) => {
       const edge = data.customer.metafields.edges.find(
         (e: any) => e.node.namespace === 'custom' && e.node.key === key
@@ -155,7 +158,6 @@ export async function GET(request: NextRequest) {
 
     const priceTier = getMetafield('price_tier') || '';
     
-    // price_tier에서 통화 기호 결정
     let currencySymbol = '';
     if (priceTier.includes('USD')) {
       currencySymbol = '$';
@@ -165,17 +167,53 @@ export async function GET(request: NextRequest) {
       currencySymbol = '¥';
     }
 
-    // 취소된 주문 제외 + 데이터 매핑
     const orders = data.customer.orders.edges
       .filter((edge: any) => !edge.node.cancelledAt)
       .map((edge: any) => {
         const order = edge.node;
-        
-        // note에서 실제 금액 추출
         const noteTotal = extractTotalFromNote(order.note);
         
-        // 태그에서 시즌 추출
-        const season = extractSeasonFromTags(order.tags || []);
+        // ★ line_items에서 모든 시즌 수집
+        const seasonsSet = new Set<string>();
+        
+        const lineItems = order.lineItems.edges.map((item: any) => {
+          const imageUrl = item.node.image?.url || item.node.variant?.image?.url || null;
+          const unitPrice = parseFloat(item.node.originalUnitPriceSet?.shopMoney?.amount || '0');
+          
+          // variant_id 추출
+          let variantId = '';
+          if (item.node.variant?.id) {
+            const match = item.node.variant.id.match(/ProductVariant\/(\d+)/);
+            variantId = match ? match[1] : item.node.variant.id;
+          }
+          
+          // ★ 제품 메타필드에서 시즌 추출
+          const season = item.node.variant?.product?.metafield?.value || '';
+          
+          // 시즌이 있으면 Set에 추가
+          if (season) {
+            seasonsSet.add(season.toUpperCase());
+          }
+          
+          return {
+            title: item.node.title,
+            quantity: item.node.quantity,
+            sku: item.node.sku || item.node.variant?.sku || '',
+            image: imageUrl,
+            price: unitPrice,
+            variant_id: variantId,
+            season: season.toUpperCase() || ''  // ★ 각 아이템에 시즌 추가
+          };
+        });
+        
+        // ★ 주문 태그에서도 시즌 추출 (fallback)
+        const tagSeason = extractSeasonFromTags(order.tags || []);
+        if (tagSeason) {
+          seasonsSet.add(tagSeason);
+        }
+        
+        // Set을 배열로 변환
+        const seasons = Array.from(seasonsSet);
         
         return {
           id: order.id,
@@ -184,31 +222,18 @@ export async function GET(request: NextRequest) {
           fulfillment_status: order.displayFulfillmentStatus,
           financial_status: order.displayFinancialStatus,
           tags: order.tags || [],
-          season: season,  // 시즌 필드 추가
+          season: seasons[0] || null,      // ★ 첫 번째 시즌 (기존 호환)
+          seasons: seasons,                 // ★ 모든 시즌 배열 (다중 시즌 지원)
           total: {
             amount: noteTotal ? noteTotal.amount : parseFloat(order.totalPriceSet.shopMoney.amount),
             currencyCode: order.totalPriceSet.shopMoney.currencyCode,
             display: noteTotal ? noteTotal.display : null
           },
-          item_count: order.lineItems.edges.reduce(
-            (sum: number, item: any) => sum + item.node.quantity,
+          item_count: lineItems.reduce(
+            (sum: number, item: any) => sum + item.quantity,
             0
           ),
-          line_items: order.lineItems.edges.map((item: any) => {
-            // 이미지 URL 우선순위: lineItem.image > variant.image
-            const imageUrl = item.node.image?.url || item.node.variant?.image?.url || null;
-            
-            // 단가
-            const unitPrice = parseFloat(item.node.originalUnitPriceSet?.shopMoney?.amount || '0');
-            
-            return {
-              title: item.node.title,
-              quantity: item.node.quantity,
-              sku: item.node.sku || item.node.variant?.sku || '',
-              image: imageUrl,
-              price: unitPrice
-            };
-          }),
+          line_items: lineItems,
           note: order.note,
         };
       });
