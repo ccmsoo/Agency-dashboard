@@ -23,15 +23,17 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // ★ 모든 고객 조회 (pagination)
+    // ★ 메타필드 필터로 해당 에이전시 소속 고객만 조회 (성능 대폭 개선)
+    // 기존: 전체 고객 조회 후 JS에서 필터 → 고객 3000명이면 API 30회 호출
+    // 변경: GraphQL query 필터로 서버에서 바로 필터 → API 1~2회
     let allCustomers: any[] = [];
     let hasNextPage = true;
     let cursor: string | null = null;
 
     while (hasNextPage) {
       const query = `
-        query GetCustomers($cursor: String) {
-          customers(first: 100, after: $cursor) {
+        query GetAgencyStores($cursor: String, $agencyFilter: String!) {
+          customers(first: 100, after: $cursor, query: $agencyFilter) {
             pageInfo {
               hasNextPage
               endCursor
@@ -50,7 +52,7 @@ export async function GET(request: NextRequest) {
                     }
                   }
                 }
-                orders(first: 100) {
+                orders(first: 5, sortKey: CREATED_AT, reverse: true) {
                   edges {
                     node {
                       id
@@ -66,7 +68,10 @@ export async function GET(request: NextRequest) {
         }
       `;
 
-      const variables = { cursor };
+      const variables = {
+        cursor,
+        agencyFilter: `metafield:custom.belongs_to_agency:${agencyCode}`
+      };
       const data = await shopifyAdminAPI(query, variables);
 
       allCustomers = [...allCustomers, ...data.customers.edges];
@@ -82,24 +87,17 @@ export async function GET(request: NextRequest) {
       return edge?.node?.value || null;
     };
 
-    // ★ agency_code로 필터링 (대소문자 무시 + trim)
+    // 이미 서버에서 필터링됨 — 매핑만 하면 됨
     const stores = allCustomers
-      .filter((edge: any) => {
-        const belongsTo = getMetafield(edge.node.metafields.edges, 'belongs_to_agency');
-        if (!belongsTo) return false;
-        
-        // 대소문자 무시 + 앞뒤 공백 제거
-        return belongsTo.trim().toLowerCase() === agencyCode.trim().toLowerCase();
-      })
       .map((edge: any) => {
         const customer = edge.node;
         const metafields = customer.metafields.edges;
-        
+
         // 취소되지 않은 주문만 필터링
         const validOrders = customer.orders.edges.filter(
           (o: any) => !o.node.cancelledAt
         );
-        
+
         const lastOrder = validOrders[0]?.node;
 
         return {
