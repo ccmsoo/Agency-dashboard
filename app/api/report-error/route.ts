@@ -80,8 +80,31 @@ async function sendViaResend(to: string, data: any) {
                 <td style="padding:8px;border-bottom:1px solid #eee;">${data.accountCode || '-'}</td></tr>
             ${data.isAgencyOrder ? `<tr><td style="padding:8px;font-weight:bold;border-bottom:1px solid #eee;">Agency Store</td>
                 <td style="padding:8px;border-bottom:1px solid #eee;">${data.agencyStore || '-'}</td></tr>` : ''}
-            ${data.cartSummary ? `<tr><td style="padding:8px;font-weight:bold;border-bottom:1px solid #eee;">Cart</td>
-                <td style="padding:8px;border-bottom:1px solid #eee;">${data.cartSummary.itemCount} items, ${data.cartSummary.totalQuantity} qty</td></tr>` : ''}
+            ${data.cartSummary ? `<tr><td style="padding:8px;font-weight:bold;border-bottom:1px solid #eee;vertical-align:top;">Cart</td>
+                <td style="padding:8px;border-bottom:1px solid #eee;">
+                  <div style="margin-bottom:6px;"><strong>${data.cartSummary.itemCount} items, ${data.cartSummary.totalQuantity} qty total</strong></div>
+                  ${(data.cartSummary.items || []).length > 0 ? `
+                    <table style="width:100%;border-collapse:collapse;font-size:12px;background:#fafafa;border:1px solid #eee;margin-top:4px;">
+                      <thead>
+                        <tr style="background:#f0f0f0;">
+                          <th style="text-align:left;padding:6px;border-bottom:1px solid #ddd;">Product</th>
+                          <th style="text-align:center;padding:6px;border-bottom:1px solid #ddd;width:50px;">Qty</th>
+                          <th style="text-align:left;padding:6px;border-bottom:1px solid #ddd;width:90px;">Variant ID</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${data.cartSummary.items.map((item: any) => `
+                          <tr>
+                            <td style="padding:6px;border-bottom:1px solid #eee;">${item.title || '-'}</td>
+                            <td style="padding:6px;border-bottom:1px solid #eee;text-align:center;font-weight:bold;">${item.qty || 0}</td>
+                            <td style="padding:6px;border-bottom:1px solid #eee;font-family:monospace;font-size:11px;">${item.variant_id || '-'}</td>
+                          </tr>
+                        `).join('')}
+                      </tbody>
+                    </table>
+                    ${data.cartSummary.itemCount > data.cartSummary.items.length ? `<p style="font-size:11px;color:#999;margin:4px 0 0;">(showing first ${data.cartSummary.items.length} of ${data.cartSummary.itemCount} items)</p>` : ''}
+                  ` : ''}
+                </td></tr>` : ''}
             <tr><td style="padding:8px;font-weight:bold;border-bottom:1px solid #eee;">URL</td>
                 <td style="padding:8px;border-bottom:1px solid #eee;word-break:break-all;font-size:11px;">${data.pageUrl || '-'}</td></tr>
             <tr><td style="padding:8px;font-weight:bold;border-bottom:1px solid #eee;">Browser</td>
