@@ -1,8 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { shopifyAdminAPI } from '@/app/lib/shopify';
+import { authenticateProxyRequest, canAccessAgencyCode } from '@/app/lib/proxyAuth';
+
+const ALLOWED_ORIGINS = [
+  'https://cpnmmm-wb.myshopify.com',
+  'https://amomentowholesale.com',
+];
 
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Origin': ALLOWED_ORIGINS[1],
   'Access-Control-Allow-Methods': 'GET, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
@@ -21,6 +27,15 @@ export async function GET(request: NextRequest) {
         { error: 'agency_code is required' },
         { status: 400, headers: corsHeaders }
       );
+    }
+
+    // 인증: 로그인한 고객만 + 본인 에이전시 코드만 조회 가능
+    const auth = await authenticateProxyRequest(request);
+    if (!auth.ok) {
+      return NextResponse.json({ error: auth.error }, { status: auth.status, headers: corsHeaders });
+    }
+    if (!canAccessAgencyCode(auth.customer, agencyCode)) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403, headers: corsHeaders });
     }
 
     // ★ 메타필드 필터로 해당 에이전시 소속 고객만 조회 (성능 대폭 개선)

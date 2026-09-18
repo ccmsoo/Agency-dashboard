@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { authenticateProxyRequest, canAccessAccountCode } from '@/app/lib/proxyAuth';
 
 export const maxDuration = 30;
 
@@ -44,8 +45,18 @@ export async function GET(request: NextRequest) {
     const storeName = (params.get('store_name') || '').trim();
     const requestedOrderId = (params.get('order_id') || '').trim();
 
-    if (!accountCode && !storeName) {
+    if (!accountCode) {
       return NextResponse.json({ error: 'Missing account_code' }, { status: 400, headers: corsHeaders });
+    }
+
+    // 인증: 로그인 고객 본인의 스토어, 또는 에이전시 마스터의 소속 스토어만 조회 가능
+    // (store_name 만으로도 조회되던 경로는 상호명 추측만으로 남의 주문을 열 수 있어 제거함)
+    const auth = await authenticateProxyRequest(request);
+    if (!auth.ok) {
+      return NextResponse.json({ error: auth.error }, { status: auth.status, headers: corsHeaders });
+    }
+    if (!(await canAccessAccountCode(auth.customer, accountCode))) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403, headers: corsHeaders });
     }
 
     const store: StoreIdentity = { account_code: accountCode, name: storeName };
