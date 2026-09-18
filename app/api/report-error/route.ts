@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { authenticateProxyRequest } from '@/app/lib/proxyAuth';
 
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Origin': 'https://amomentowholesale.com',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
@@ -12,6 +13,13 @@ export async function OPTIONS() {
 
 export async function POST(request: NextRequest) {
   try {
+    // 인증: 메일을 발송하는 엔드포인트라 무인증이면 외부에서 발송 남용이 가능하다.
+    // 테마의 b2b-error-reporter.js 는 로그인 고객에게만 로드되므로 기능에는 영향 없음.
+    const auth = await authenticateProxyRequest(request);
+    if (!auth.ok) {
+      return NextResponse.json({ error: auth.error }, { status: auth.status, headers: corsHeaders });
+    }
+
     const errorData = await request.json();
 
     if (!errorData || !errorData.message) {

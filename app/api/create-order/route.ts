@@ -1,4 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
+import {
+  authenticateProxyRequest,
+  canAccessCustomerId,
+  loadCustomerContext,
+} from '@/app/lib/proxyAuth';
 
 export const maxDuration = 30;
 
@@ -42,16 +47,13 @@ type CreateOrderBody = {
 export async function POST(request: NextRequest) {
   const corsHeaders = corsHeadersFor(request.headers.get('origin'));
 
-  // 인증: App Proxy 서명(shop 파라미터) 또는 API 키 (하위 호환)
-  const apiKey = request.headers.get('x-api-key');
-  const url = new URL(request.url);
-  const shopifyShop = url.searchParams.get('shop') || request.headers.get('x-shopify-shop-domain');
-
-  const validApiKey = apiKey && apiKey === process.env.API_SECRET_KEY;
-  if (!validApiKey && !shopifyShop) {
+  // 인증: App Proxy 서명 + 로그인 고객 확인
+  // (이전 방식은 ?shop= 값이 "있기만 하면" 통과해서 사실상 인증이 없었음)
+  const auth = await authenticateProxyRequest(request);
+  if (!auth.ok) {
     return NextResponse.json(
-      { success: false, error: 'Unauthorized - No valid authentication' },
-      { status: 401, headers: corsHeaders }
+      { success: false, error: auth.error },
+      { status: auth.status, headers: corsHeaders }
     );
   }
 
@@ -75,16 +77,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const {
-    customerId,
-    customerEmail,
-    customerName,
-    accountCode,
-    lineItems,
-    customerTier,
-    actualPrices,
-    shippingAddress,
-  } = body;
+  const { customerId: requestedCustomerId, lineItems, actualPrices, shippingAddress } = body;
 
   if (!Array.isArray(lineItems) || lineItems.length === 0) {
     return NextResponse.json(
@@ -92,6 +85,33 @@ export async function POST(request: NextRequest) {
       { status: 400, headers: corsHeaders }
     );
   }
+
+  // 주문 주체는 서버가 확정한다. 요청 본문의 신원/티어 값은 신뢰하지 않는다.
+  // (에이전시 마스터가 소속 스토어를 대리 주문하는 경우만 타인 지정 허용)
+  let actingFor = auth.customer;
+  const requestedId = String(requestedCustomerId || '').split('/').pop() || '';
+  if (requestedId && requestedId !== auth.customer.id) {
+    if (!(await canAccessCustomerId(auth.customer, requestedId))) {
+      return NextResponse.json(
+        { success: false, error: 'Forbidden' },
+        { status: 403, headers: corsHeaders }
+      );
+    }
+    const target = await loadCustomerContext(requestedId);
+    if (!target) {
+      return NextResponse.json(
+        { success: false, error: 'Unknown customer' },
+        { status: 400, headers: corsHeaders }
+      );
+    }
+    actingFor = target;
+  }
+
+  const customerId = actingFor.id;
+  const customerEmail = actingFor.email;
+  const customerName = actingFor.name;
+  const accountCode = actingFor.accountCode;
+  const customerTier = actingFor.priceTier;
 
   try {
     console.log('Received order request:', JSON.stringify(body, null, 2));

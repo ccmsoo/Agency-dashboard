@@ -1,6 +1,41 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { shopifyAdminAPI } from '@/app/lib/shopify';
+import {
+  authenticateProxyRequest,
+  canAccessAccountCode,
+  type CustomerContext,
+} from '@/app/lib/proxyAuth';
 
 export const maxDuration = 15;
+
+/** 취소하려는 주문이 요청자의 것인지 Shopify 에서 직접 확인한다. */
+async function canCancelOrder(actor: CustomerContext, orderId: string): Promise<boolean> {
+  const numericId = String(orderId).split('/').pop() || '';
+  if (!/^\d+$/.test(numericId)) return false;
+
+  const data = await shopifyAdminAPI(
+    `query OrderOwner($id: ID!) {
+       order(id: $id) {
+         id
+         customer { id }
+         customAttributes { key value }
+       }
+     }`,
+    { id: `gid://shopify/Order/${numericId}` }
+  );
+
+  const order = data?.order;
+  if (!order) return false;
+
+  const ownerId = String(order.customer?.id || '').split('/').pop() || '';
+  if (ownerId && ownerId === actor.id) return true;
+
+  const attrs: { key: string; value: string }[] = order.customAttributes || [];
+  const accountCode = attrs.find((a) => a.key === 'Account Code')?.value || '';
+  if (!accountCode) return false;
+
+  return canAccessAccountCode(actor, accountCode);
+}
 
 const SHOPIFY_API_VERSION = '2024-01';
 
@@ -31,15 +66,13 @@ type CancelOrderBody = {
 export async function POST(request: NextRequest) {
   const corsHeaders = corsHeadersFor(request.headers.get('origin'));
 
-  const apiKey = request.headers.get('x-api-key');
-  const url = new URL(request.url);
-  const shopifyShop = url.searchParams.get('shop') || request.headers.get('x-shopify-shop-domain');
-
-  const validApiKey = apiKey && apiKey === process.env.API_SECRET_KEY;
-  if (!validApiKey && !shopifyShop) {
+  // 인증: App Proxy 서명 + 로그인 고객 확인
+  // (이전 방식은 ?shop= 값이 "있기만 하면" 통과해서 사실상 인증이 없었음)
+  const auth = await authenticateProxyRequest(request);
+  if (!auth.ok) {
     return NextResponse.json(
-      { success: false, error: 'Unauthorized' },
-      { status: 401, headers: corsHeaders }
+      { success: false, error: auth.error },
+      { status: auth.status, headers: corsHeaders }
     );
   }
 
@@ -71,8 +104,28 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // 소유권 검증: 남의 주문을 취소할 수 없다
+  let allowed = false;
   try {
-    console.log(`Cancelling order: ${orderName || orderId} for customer: ${customerId}`);
+    allowed = await canCancelOrder(auth.customer, String(orderId));
+  } catch (error) {
+    console.error('Ownership check failed:', error);
+    return NextResponse.json(
+      { success: false, error: 'Authorization check failed' },
+      { status: 503, headers: corsHeaders }
+    );
+  }
+  if (!allowed) {
+    return NextResponse.json(
+      { success: false, error: 'Forbidden' },
+      { status: 403, headers: corsHeaders }
+    );
+  }
+
+  try {
+    console.log(
+      `Cancelling order: ${orderName || orderId} requested by customer ${auth.customer.id} (body customerId: ${customerId})`
+    );
 
     const cancelRes = await fetch(
       `https://${SHOPIFY_STORE_URL}/admin/api/${SHOPIFY_API_VERSION}/orders/${orderId}/cancel.json`,

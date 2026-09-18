@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { shopifyAdminAPI } from '@/app/lib/shopify';
+import { authenticateProxyRequest, canAccessCustomerId } from '@/app/lib/proxyAuth';
 
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Origin': 'https://amomentowholesale.com',
   'Access-Control-Allow-Methods': 'GET, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
@@ -69,6 +70,15 @@ export async function GET(request: NextRequest) {
         { error: 'customer_id is required' },
         { status: 400, headers: corsHeaders }
       );
+    }
+
+    // 인증: 본인 주문이거나, 자신의 에이전시 소속 스토어의 주문만 조회 가능
+    const auth = await authenticateProxyRequest(request);
+    if (!auth.ok) {
+      return NextResponse.json({ error: auth.error }, { status: auth.status, headers: corsHeaders });
+    }
+    if (!(await canAccessCustomerId(auth.customer, customerId))) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403, headers: corsHeaders });
     }
 
     const query = `
